@@ -58,6 +58,25 @@ namespace LTCSDL
 
                         MessageBox.Show("Chào " + tenUser + " (" + chucVu + ")", "Thông báo");
 
+                        // ========================================================
+                        // TÍNH NĂNG MỚI: BẮT ĐẦU GHI NHẬN GIỜ VÀO CA LÀM VIỆC
+                        // ========================================================
+                        try
+                        {
+                            // Tận dụng luôn biến 'conn' đang mở ở trên để chạy lệnh Insert
+                            string sqlChamCong = "INSERT INTO ChamCong (Username, ThoiGianVao) VALUES (@userChamCong, @vao)";
+                            SqlCommand cmdChamCong = new SqlCommand(sqlChamCong, conn);
+                            cmdChamCong.Parameters.AddWithValue("@userChamCong", tenUser);
+                            cmdChamCong.Parameters.AddWithValue("@vao", DateTime.Now);
+                            cmdChamCong.ExecuteNonQuery();
+                        }
+                        catch (Exception exChamCong)
+                        {
+                            // Lỗi này cứ để âm thầm ghi ra console, không làm gián đoạn việc đăng nhập
+                            Console.WriteLine("Lỗi chấm công lúc đăng nhập: " + exChamCong.Message);
+                        }
+                        // ========================================================
+
                         // Mở Form Main với 2 tham số
                         Main f = new Main(chucVu, tenUser);
                         this.Hide();
@@ -72,7 +91,7 @@ namespace LTCSDL
             }
             catch (Exception ex)
             {
-                MessageBox.Show("Lỗi kết nối: " + ex.Message);
+                MessageBox.Show("Lỗi kết nối cơ sở dữ liệu: " + ex.Message, "Lỗi hệ thống");
             }
         }
 
