@@ -79,8 +79,13 @@ namespace LTCSDL
             PhanQuyen();
             LoadData(); // Sản phẩm thì ai cũng phải thấy để bán hàng
             LoadKhachHang();
+            LoadDonWeb();
             // --- SỬA Ở ĐÂY: Thêm điều kiện kiểm tra quyền ---
             // Chỉ Quản trị viên mới được phép load dữ liệu Nhân viên và Chấm công
+            Timer timerAutoLoad = new Timer();
+            timerAutoLoad.Interval = 5000; // Cứ 10.000 mili-giây (tức là 10 giây) tự động load 1 lần
+            timerAutoLoad.Tick += TimerAutoLoad_Tick; // Gắn sự kiện chạy ngầm
+            timerAutoLoad.Start(); // Bật công tắc cho Timer chạy
             if (quyenNguoiDung != "Nhân viên")
             {
                 LoadNhanVien();
@@ -648,37 +653,66 @@ namespace LTCSDL
                 return;
             }
 
-            // Lấy tên nhân viên từ nhãn hiển thị (loại bỏ chữ "Xin chào: ")
+            // Lấy tên nhân viên
             string tenNV = lblUserHienThi.Text.Replace("Xin chào: ", "").Trim();
 
             using (SqlConnection conn = new SqlConnection(cnStr))
             {
                 conn.Open();
-                SqlTransaction tran = conn.BeginTransaction(); // Bắt đầu giao dịch để đảm bảo an toàn
+                SqlTransaction tran = conn.BeginTransaction();
 
                 try
                 {
-                    // 3. TẠO HÓA ĐƠN MỚI
-                    string maHD = "HD" + DateTime.Now.ToString("ddMMyyHHmmss");
+                    // ==========================================================
+                    // BƯỚC A: XỬ LÝ KHÁCH HÀNG (Tìm khách cũ hoặc tạo khách mới)
+                    // ==========================================================
+                    string sdt = txtSDT_BanHang.Text.Trim();
+                    string tenKH = txtTenKH_BanHang.Text.Trim();
+                    int maKH = 0;
 
-                    // Xóa sạch ký tự thừa để lấy số tổng tiền thuần túy
-                    string cleanTongTien = lblTongTien.Text.Replace(".", "").Replace("VNĐ", "").Replace(" ", "").Trim();
-                    long tongTien = 0;
-                    if (!long.TryParse(cleanTongTien, out tongTien))
+                    // Kiểm tra xem khách đã từng mua chưa
+                    string sqlCheckKH = "SELECT MaKH FROM KhachHang WHERE SDT = @sdt";
+                    SqlCommand cmdCheck = new SqlCommand(sqlCheckKH, conn, tran);
+                    cmdCheck.Parameters.AddWithValue("@sdt", sdt);
+                    object resultKH = cmdCheck.ExecuteScalar();
+
+                    if (resultKH != null)
                     {
-                        MessageBox.Show("Số tiền không hợp lệ, vui lòng kiểm tra lại!");
-                        return;
+                        maKH = Convert.ToInt32(resultKH); // Khách cũ, lấy mã
+                    }
+                    else
+                    {
+                        // Khách mới: Thêm vào và lấy mã tự tăng (OUTPUT INSERTED.MaKH)
+                        string sqlInsertKH = "INSERT INTO KhachHang (TenKH, SDT, NgayMua) OUTPUT INSERTED.MaKH VALUES (@ten, @sdt, @ngay)";
+                        SqlCommand cmdInsertKH = new SqlCommand(sqlInsertKH, conn, tran);
+                        cmdInsertKH.Parameters.AddWithValue("@ten", tenKH);
+                        cmdInsertKH.Parameters.AddWithValue("@sdt", sdt);
+                        cmdInsertKH.Parameters.AddWithValue("@ngay", DateTime.Now);
+                        maKH = (int)cmdInsertKH.ExecuteScalar();
                     }
 
-                    string sqlHD = "INSERT INTO HoaDon (MaHD, NgayBan, TongTien, NhanVien) VALUES (@ma, @ngay, @tong, @nv)";
+                    // ==========================================================
+                    // BƯỚC B: TẠO HÓA ĐƠN (Đồng bộ với chuẩn Web)
+                    // ==========================================================
+                    // Dùng tiền tố POS để phân biệt đơn bán tại cửa hàng và đơn WEB
+                    string maHD = "POS" + DateTime.Now.ToString("ddMMyyHHmmss");
+                    string cleanTongTien = lblTongTien.Text.Replace(".", "").Replace("VNĐ", "").Replace(" ", "").Trim();
+                    long tongTien = long.Parse(cleanTongTien);
+
+                    // Thêm NguonDon và TrangThai để sau này báo cáo dễ dàng
+                    string sqlHD = "INSERT INTO HoaDon (MaHD, NgayBan, TongTien, NhanVien, MaKH, NguonDon, TrangThai) " +
+                                   "VALUES (@ma, @ngay, @tong, @nv, @makh, 'Tại cửa hàng', 'Hoàn thành')";
                     SqlCommand cmdHD = new SqlCommand(sqlHD, conn, tran);
                     cmdHD.Parameters.AddWithValue("@ma", maHD);
                     cmdHD.Parameters.AddWithValue("@ngay", DateTime.Now);
                     cmdHD.Parameters.AddWithValue("@tong", tongTien);
                     cmdHD.Parameters.AddWithValue("@nv", tenNV);
+                    cmdHD.Parameters.AddWithValue("@makh", maKH);
                     cmdHD.ExecuteNonQuery();
 
-                    // 4. DUYỆT GIỎ HÀNG: LƯU CHI TIẾT + TRỪ KHO + LƯU BẢO HÀNH
+                    // ==========================================================
+                    // BƯỚC C: LƯU CHI TIẾT HÓA ĐƠN VÀ TRỪ KHO
+                    // ==========================================================
                     foreach (DataGridViewRow row in dgvGioHang.Rows)
                     {
                         if (row.IsNewRow || row.Cells[0].Value == null) continue;
@@ -688,7 +722,7 @@ namespace LTCSDL
                         long gia = Convert.ToInt64(row.Cells[3].Value);
                         long tt = Convert.ToInt64(row.Cells[4].Value);
 
-                        // A. Lưu Chi Tiết Hóa Đơn
+                        // Lưu Chi Tiết (Không còn bị dính chùm nữa)
                         string sqlCT = "INSERT INTO ChiTietHoaDon (MaHD, MaSP, SoLuong, DonGia, ThanhTien, NhanVien) " +
                                        "VALUES (@mahd, @masp, @sl, @dg, @tt, @nv)";
                         SqlCommand cmdCT = new SqlCommand(sqlCT, conn, tran);
@@ -700,44 +734,17 @@ namespace LTCSDL
                         cmdCT.Parameters.AddWithValue("@nv", tenNV);
                         cmdCT.ExecuteNonQuery();
 
-                        // B. Cập nhật giảm Tồn kho
+                        // Trừ tồn kho
                         string sqlUp = "UPDATE SanPham SET [Tồn kho] = [Tồn kho] - @sl WHERE [Mã sản phẩm] = @masp";
                         SqlCommand cmdUp = new SqlCommand(sqlUp, conn, tran);
                         cmdUp.Parameters.AddWithValue("@sl", slMua);
                         cmdUp.Parameters.AddWithValue("@masp", maSP);
                         cmdUp.ExecuteNonQuery();
-
-                        // C. LƯU THÔNG TIN BẢO HÀNH KHÁCH HÀNG
-                        // C1. Lấy thông số "Bảo hành" từ bảng sản phẩm (Ví dụ: "24 Tháng")
-                        string sqlGetBH = "SELECT [Bảo hành] FROM SanPham WHERE [Mã sản phẩm] = @maspBH";
-                        SqlCommand cmdGetBH = new SqlCommand(sqlGetBH, conn, tran);
-                        cmdGetBH.Parameters.AddWithValue("@maspBH", maSP);
-                        object bhObj = cmdGetBH.ExecuteScalar();
-
-                        int soThangBH = 0;
-                        if (bhObj != null && bhObj != DBNull.Value)
-                        {
-                            // Tự động bóc tách lấy con số từ chuỗi
-                            string bhStr = bhObj.ToString();
-                            string numbers = new string(bhStr.Where(char.IsDigit).ToArray());
-                            if (!string.IsNullOrEmpty(numbers)) soThangBH = int.Parse(numbers);
-                        }
-
-                        // C2. Đẩy thông tin qua bảng KhachHang
-                        string sqlKH = "INSERT INTO KhachHang (TenKH, SDT, MaSP, NgayMua, ThoiHanBH) " +
-                                       "VALUES (@tenkh, @sdtkh, @maspKH, @ngayKH, @thangBH)";
-                        SqlCommand cmdKH = new SqlCommand(sqlKH, conn, tran);
-                        cmdKH.Parameters.AddWithValue("@tenkh", txtTenKH_BanHang.Text);
-                        cmdKH.Parameters.AddWithValue("@sdtkh", txtSDT_BanHang.Text);
-                        cmdKH.Parameters.AddWithValue("@maspKH", maSP);
-                        cmdKH.Parameters.AddWithValue("@ngayKH", DateTime.Now);
-                        cmdKH.Parameters.AddWithValue("@thangBH", soThangBH);
-                        cmdKH.ExecuteNonQuery();
                     }
 
-                    tran.Commit(); // Lưu toàn bộ giao dịch vào cơ sở dữ liệu thành công
+                    tran.Commit(); // Chốt giao dịch thành công
 
-                    // 5. Hỏi xuất hóa đơn
+                    // 5. Hỏi xuất hóa đơn (Hàm in hóa đơn của bạn giữ nguyên, không cần sửa)
                     if (MessageBox.Show("Thanh toán thành công! Bạn có muốn xem hóa đơn không?", "Xác nhận",
                         MessageBoxButtons.YesNo, MessageBoxIcon.Question) == DialogResult.Yes)
                     {
@@ -753,7 +760,7 @@ namespace LTCSDL
                 }
                 catch (Exception ex)
                 {
-                    tran.Rollback(); // Hủy toàn bộ thao tác nếu xảy ra lỗi
+                    tran.Rollback(); // Hoàn tác nếu có lỗi
                     MessageBox.Show("Lỗi trong quá trình thanh toán: " + ex.Message, "Lỗi hệ thống");
                 }
             }
@@ -1173,18 +1180,84 @@ namespace LTCSDL
                 try
                 {
                     conn.Open();
-                    // SQL tự động tính ngày hết hạn để Admin xem luôn
-                    string sql = @"SELECT MaKH AS [Mã KH], 
-                                  TenKH AS [Họ Tên], 
-                                  SDT AS [Số Điện Thoại], 
-                                  MaSP AS [Sản Phẩm], 
-                                  NgayMua AS [Ngày Mua], 
-                                  ThoiHanBH AS [BH (Tháng)], 
-                                  DATEADD(MONTH, ThoiHanBH, NgayMua) AS [Hết Hạn] 
-                           FROM KhachHang ORDER BY NgayMua DESC";
+                    string sql = @"
+                        SELECT CAST(MaKH AS VARCHAR) AS [Mã KH], 
+                               TenKH AS [Họ Tên], 
+                               SDT AS [Số Điện Thoại], 
+                               ISNULL(MaSP, N'Đơn Web (Nhiều món)') AS [Sản Phẩm], 
+                               NgayMua AS [Ngày Mua], 
+                               ISNULL(ThoiHanBH, 0) AS [BH (Tháng)], 
+                               NgayMua AS [Hết Hạn] 
+                        FROM KhachHang 
+
+                        UNION ALL 
+
+                        SELECT 'WEB-' + CAST(Id AS VARCHAR) AS [Mã KH], 
+                               HoTen AS [Họ Tên], 
+                               SoDienThoai AS [Số Điện Thoại], 
+                               DanhSachSanPham AS [Sản Phẩm], 
+                               NgayDat AS [Ngày Mua], 
+                               0 AS [BH (Tháng)], 
+                               NgayDat AS [Hết Hạn] 
+                        FROM ChiTietKhachHang 
+
+                        ORDER BY [Ngày Mua] DESC";
+
                     SqlDataAdapter da = new SqlDataAdapter(sql, conn);
                     DataTable dt = new DataTable();
                     da.Fill(dt);
+
+                    // THỦ THUẬT: Lấy tên sản phẩm đi tra cứu ngược trong kho
+                    foreach (DataRow row in dt.Rows)
+                    {
+                        string maKH = row["Mã KH"].ToString();
+                        DateTime ngayMua = Convert.ToDateTime(row["Ngày Mua"]);
+                        int bhThang = 0;
+
+                        if (maKH.StartsWith("WEB-"))
+                        {
+                            string spStr = row["Sản Phẩm"].ToString();
+                            string tenSPLookup = "";
+
+                            // Cắt lấy Tên sản phẩm (Bỏ chuỗi số lượng " (x...)" và giá tiền đi)
+                            int pos = spStr.IndexOf(" (x");
+                            if (pos == -1) pos = spStr.IndexOf(" x");
+                            if (pos == -1) pos = spStr.IndexOf("=");
+
+                            if (pos > 0)
+                            {
+                                tenSPLookup = spStr.Substring(0, pos).Trim();
+
+                                // Chạy vào kho tìm số bảo hành của món này
+                                string sqlLookup = "SELECT [Bảo hành] FROM SanPham WHERE [Tên sản phẩm] LIKE @ten";
+                                using (SqlCommand cmdLookup = new SqlCommand(sqlLookup, conn))
+                                {
+                                    // Dùng LIKE để tìm tương đối cho an toàn
+                                    cmdLookup.Parameters.AddWithValue("@ten", "%" + tenSPLookup + "%");
+                                    object kq = cmdLookup.ExecuteScalar();
+
+                                    if (kq != null && kq != DBNull.Value)
+                                    {
+                                        string bhStr = kq.ToString(); // VD: "36 Tháng"
+                                        // Bóc tách lấy đúng con số
+                                        string numStr = new string(bhStr.Where(char.IsDigit).ToArray());
+                                        if (!string.IsNullOrEmpty(numStr))
+                                        {
+                                            bhThang = int.Parse(numStr);
+                                        }
+                                    }
+                                }
+                            }
+                            row["BH (Tháng)"] = bhThang;
+                        }
+                        else
+                        {
+                            bhThang = Convert.ToInt32(row["BH (Tháng)"]);
+                        }
+
+                        row["Hết Hạn"] = ngayMua.AddMonths(bhThang);
+                    }
+
                     dgvKhachHang.DataSource = dt;
                     dgvKhachHang.AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.Fill;
                 }
@@ -1233,7 +1306,51 @@ namespace LTCSDL
         {
 
         }
+        // ==========================================================
+        // HÀM CHẠY NGẦM: CỨ 10 GIÂY TỰ ĐỘNG LÀM MỚI (PHIÊN BẢN HOÀN HẢO)
+        // ==========================================================
+        private void TimerAutoLoad_Tick(object sender, EventArgs e)
+        {
+            if (tabControl1.SelectedTab != null && tabControl1.SelectedTab.Text == "Duyệt đơn Web")
+            {
+                // 1. Ghi nhớ Mã đơn hàng bạn đang bấm xem (nếu có)
+                string maHD_DangXem = "";
+                if (dgvDonWeb.CurrentRow != null && dgvDonWeb.CurrentRow.Index >= 0)
+                {
+                    maHD_DangXem = dgvDonWeb.CurrentRow.Cells["Mã Đơn"].Value?.ToString() ?? "";
+                }
 
+                // 2. Tải lại danh sách đơn để "hứng" đơn mới từ Web
+                LoadDonWeb();
+
+                // Cập nhật tiêu đề để bạn biết nó vẫn đang chạy
+                this.Text = "CỬA HÀNG LINH KIỆN PC - [Đã cập nhật lúc: " + DateTime.Now.ToString("HH:mm:ss") + "]";
+
+                // 3. Tìm và bôi xanh lại đúng cái đơn lúc nãy bạn đang xem
+                bool timThay = false;
+                if (!string.IsNullOrEmpty(maHD_DangXem))
+                {
+                    foreach (DataGridViewRow row in dgvDonWeb.Rows)
+                    {
+                        if (row.Cells["Mã Đơn"].Value?.ToString() == maHD_DangXem)
+                        {
+                            row.Selected = true;
+                            dgvDonWeb.CurrentCell = row.Cells[0]; // Trả lại con trỏ chuột về đúng dòng đó
+                            timThay = true;
+                            break;
+                        }
+                    }
+                }
+
+                // 4. Nếu lúc nãy bạn chưa chọn gì, thì xóa viền xanh mặc định đi cho đẹp
+                if (!timThay)
+                {
+                    dgvDonWeb.ClearSelection();
+                    // Lưu ý: Không thêm dòng dgvChiTietDon.DataSource = null ở đây nữa
+                    // để giữ nguyên danh sách món hàng bạn đang xem ở bảng dưới.
+                }
+            }
+        }
         private void dgvKhachHang_CellClick(object sender, DataGridViewCellEventArgs e)
         {
             if (e.RowIndex >= 0)
@@ -1243,29 +1360,36 @@ namespace LTCSDL
                 txtTenKH.Text = row.Cells["Họ Tên"].Value?.ToString();
                 txtSDT_KH.Text = row.Cells["Số Điện Thoại"].Value?.ToString();
                 txtMaSP_Mua.Text = row.Cells["Sản Phẩm"].Value?.ToString();
-                dtpNgayMua.Value = Convert.ToDateTime(row.Cells["Ngày Mua"].Value);
-                nmThoiHanBH.Value = Convert.ToDecimal(row.Cells["BH (Tháng)"].Value);
-                // Sau khi gán xong, tự gọi hàm tính để hiện ngày hết hạn lên TextBox
+
+                if (row.Cells["Ngày Mua"].Value != DBNull.Value && row.Cells["Ngày Mua"].Value != null)
+                    dtpNgayMua.Value = Convert.ToDateTime(row.Cells["Ngày Mua"].Value);
+
+                if (row.Cells["BH (Tháng)"].Value != DBNull.Value && row.Cells["BH (Tháng)"].Value != null)
+                    nmThoiHanBH.Value = Convert.ToDecimal(row.Cells["BH (Tháng)"].Value);
+                else
+                    nmThoiHanBH.Value = 0;
+
                 TinhNgayHetHan();
             }
         }
         void TinhNgayHetHan()
         {
-            // Lấy ngày mua hiện tại trên giao diện
             DateTime ngayMua = dtpNgayMua.Value;
+            int soThang = (int)nmThoiHanBH.Value; // Lấy con số tháng đã được bóc tách từ bảng lớn đẩy lên
 
-            // Lấy số tháng bảo hành
-            int soThang = (int)nmThoiHanBH.Value;
-
-            // Hệ thống tự động cộng thêm số tháng vào ngày mua
             DateTime ngayHetHan = ngayMua.AddMonths(soThang);
-
-            // Hiển thị ra ô TextBox Ngày Hết Hạn
             txtNgayHetHan.Text = ngayHetHan.ToString("dd/MM/yyyy");
         }
         private void btnSuaKH_Click(object sender, EventArgs e)
         {
             if (string.IsNullOrEmpty(txtMaKH.Text)) return;
+            if (txtMaKH.Text.StartsWith("WEB"))
+            {
+                MessageBox.Show("Đây là lịch sử khách hàng Online cũ. Không thể sửa thông tin này!", "Cảnh báo");
+                return;
+            }
+
+            // ... (Đoạn code Update SQL cũ của bạn giữ nguyên ở đây) ...
             try
             {
                 using (SqlConnection conn = new SqlConnection(cnStr))
@@ -1290,6 +1414,13 @@ namespace LTCSDL
         private void btnXoaKH_Click(object sender, EventArgs e)
         {
             if (string.IsNullOrEmpty(txtMaKH.Text)) return;
+            if (txtMaKH.Text.StartsWith("WEB"))
+            {
+                MessageBox.Show("Đây là lịch sử khách hàng Online cũ. Không thể xóa!", "Cảnh báo");
+                return;
+            }
+
+            // ... (Đoạn code Delete SQL cũ của bạn giữ nguyên ở đây) ...
             if (MessageBox.Show("Xóa lịch sử bảo hành của khách này?", "Xác nhận", MessageBoxButtons.YesNo) == DialogResult.Yes)
             {
                 using (SqlConnection conn = new SqlConnection(cnStr))
@@ -1329,42 +1460,101 @@ namespace LTCSDL
                 using (SqlConnection conn = new SqlConnection(cnStr))
                 {
                     conn.Open();
-                    // Lệnh SQL: Tìm những khách hàng có Tên HOẶC Số điện thoại chứa từ khóa vừa gõ
-                    // Vẫn giữ nguyên công thức DATEADD để tính ngày hết hạn
-                    string sql = @"SELECT MaKH AS [Mã KH], 
-                                  TenKH AS [Họ Tên], 
-                                  SDT AS [Số Điện Thoại], 
-                                  MaSP AS [Sản Phẩm], 
-                                  NgayMua AS [Ngày Mua], 
-                                  ThoiHanBH AS [BH (Tháng)], 
-                                  DATEADD(MONTH, ThoiHanBH, NgayMua) AS [Hết Hạn] 
-                           FROM KhachHang 
-                           WHERE TenKH LIKE @key OR SDT LIKE @key
-                           ORDER BY NgayMua DESC";
+                    string sql = @"
+                        SELECT CAST(MaKH AS VARCHAR) AS [Mã KH], TenKH AS [Họ Tên], SDT AS [Số Điện Thoại], ISNULL(MaSP, N'Đơn Web (Nhiều món)') AS [Sản Phẩm], NgayMua AS [Ngày Mua], ISNULL(ThoiHanBH, 0) AS [BH (Tháng)], NgayMua AS [Hết Hạn] 
+                        FROM KhachHang 
+                        WHERE TenKH LIKE @key OR SDT LIKE @key
+                        
+                        UNION ALL 
+                        
+                        SELECT 'WEB-' + CAST(Id AS VARCHAR) AS [Mã KH], HoTen AS [Họ Tên], SoDienThoai AS [Số Điện Thoại], DanhSachSanPham AS [Sản Phẩm], NgayDat AS [Ngày Mua], 0 AS [BH (Tháng)], NgayDat AS [Hết Hạn] 
+                        FROM ChiTietKhachHang 
+                        WHERE HoTen LIKE @key OR SoDienThoai LIKE @key
+                        
+                        ORDER BY [Ngày Mua] DESC";
 
                     SqlDataAdapter da = new SqlDataAdapter(sql, conn);
-                    // Dùng dấu % ở 2 đầu để tìm kiếm gần đúng (chứa từ khóa)
                     da.SelectCommand.Parameters.AddWithValue("@key", "%" + txtTimKiemKH.Text.Trim() + "%");
 
                     DataTable dt = new DataTable();
                     da.Fill(dt);
 
-                    // Cập nhật lại bảng với kết quả vừa tìm được
+                    foreach (DataRow row in dt.Rows)
+                    {
+                        string maKH = row["Mã KH"].ToString();
+                        DateTime ngayMua = Convert.ToDateTime(row["Ngày Mua"]);
+                        int bhThang = 0;
+
+                        if (maKH.StartsWith("WEB-"))
+                        {
+                            string spStr = row["Sản Phẩm"].ToString();
+                            string tenSPLookup = "";
+                            int pos = spStr.IndexOf(" (x");
+                            if (pos == -1) pos = spStr.IndexOf(" x");
+                            if (pos == -1) pos = spStr.IndexOf("=");
+
+                            if (pos > 0)
+                            {
+                                tenSPLookup = spStr.Substring(0, pos).Trim();
+                                string sqlLookup = "SELECT [Bảo hành] FROM SanPham WHERE [Tên sản phẩm] LIKE @ten";
+                                using (SqlCommand cmdLookup = new SqlCommand(sqlLookup, conn))
+                                {
+                                    cmdLookup.Parameters.AddWithValue("@ten", "%" + tenSPLookup + "%");
+                                    object kq = cmdLookup.ExecuteScalar();
+                                    if (kq != null && kq != DBNull.Value)
+                                    {
+                                        string numStr = new string(kq.ToString().Where(char.IsDigit).ToArray());
+                                        if (!string.IsNullOrEmpty(numStr)) bhThang = int.Parse(numStr);
+                                    }
+                                }
+                            }
+                            row["BH (Tháng)"] = bhThang;
+                        }
+                        else
+                        {
+                            bhThang = Convert.ToInt32(row["BH (Tháng)"]);
+                        }
+                        row["Hết Hạn"] = ngayMua.AddMonths(bhThang);
+                    }
                     dgvKhachHang.DataSource = dt;
                 }
             }
-            catch (Exception ex)
-            {
-                // Ghi lỗi ngầm, tránh báo popup liên tục khi đang gõ nhanh
-                Console.WriteLine("Lỗi khi tìm kiếm khách hàng: " + ex.Message);
-            }
+            catch (Exception ex) { Console.WriteLine("Lỗi khi tìm kiếm KH: " + ex.Message); }
         }
+        
 
         private void lblTongSoDon_Click(object sender, EventArgs e)
         {
 
         }
-
+        void LoadDonWeb()
+        {
+            using (SqlConnection conn = new SqlConnection(cnStr))
+            {
+                try
+                {
+                    conn.Open();
+                    // Lấy đơn Web, đưa đơn "Chờ xác nhận" lên ưu tiên trên cùng
+                    string sql = @"SELECT H.MaHD AS [Mã Đơn], 
+                                          K.TenKH AS [Khách Hàng], 
+                                          K.SDT AS [SĐT], 
+                                          H.NgayBan AS [Ngày Đặt], 
+                                          H.TongTien AS [Tổng Tiền], 
+                                          H.TrangThai AS [Trạng Thái]
+                                   FROM HoaDon H
+                                   INNER JOIN KhachHang K ON H.MaKH = K.MaKH
+                                   WHERE H.NguonDon = 'Web Online'
+                                   ORDER BY CASE WHEN H.TrangThai = N'Chờ xác nhận' THEN 1 ELSE 2 END, H.NgayBan DESC";
+                    SqlDataAdapter da = new SqlDataAdapter(sql, conn);
+                    DataTable dt = new DataTable();
+                    da.Fill(dt);
+                    dgvDonWeb.DataSource = dt;
+                    dgvDonWeb.AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.Fill;
+                    dgvDonWeb.ClearSelection();
+                }
+                catch (Exception ex) { Console.WriteLine("Lỗi Load đơn web: " + ex.Message); }
+            }
+        }
         private void btnThongKe_Click(object sender, EventArgs e)
         {
             using (SqlConnection conn = new SqlConnection(cnStr))
@@ -1414,6 +1604,101 @@ namespace LTCSDL
                 catch (Exception ex)
                 {
                     MessageBox.Show("Lỗi khi thống kê doanh thu: " + ex.Message);
+                }
+            }
+        }
+
+        private void btnDuyetDon_Click(object sender, EventArgs e)
+        {
+            if (dgvDonWeb.CurrentRow != null && dgvDonWeb.CurrentRow.Index >= 0)
+            {
+                string maHD = dgvDonWeb.CurrentRow.Cells["Mã Đơn"].Value.ToString();
+                string trangThai = dgvDonWeb.CurrentRow.Cells["Trạng Thái"].Value.ToString();
+
+                // Nếu đơn đã duyệt rồi thì chặn lại không cho trừ kho nữa
+                if (trangThai != "Chờ xác nhận")
+                {
+                    MessageBox.Show("Đơn này đã được xử lý rồi!", "Thông báo", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                    return;
+                }
+
+                if (MessageBox.Show($"Xác nhận duyệt đơn hàng {maHD} và xuất kho?", "Xác nhận", MessageBoxButtons.YesNo, MessageBoxIcon.Question) == DialogResult.Yes)
+                {
+                    using (SqlConnection conn = new SqlConnection(cnStr))
+                    {
+                        conn.Open();
+                        SqlTransaction tran = conn.BeginTransaction();
+
+                        try
+                        {
+                            // A. Cập nhật trạng thái thành Hoàn thành
+                            string sqlUpd = "UPDATE HoaDon SET TrangThai = N'Hoàn thành' WHERE MaHD = @ma";
+                            SqlCommand cmdUpd = new SqlCommand(sqlUpd, conn, tran);
+                            cmdUpd.Parameters.AddWithValue("@ma", maHD);
+                            cmdUpd.ExecuteNonQuery();
+
+                            // B. Trừ tồn kho liên hoàn cho tất cả món trong đơn
+                            string sqlTruKho = @"UPDATE SanPham 
+                                                 SET [Tồn kho] = [Tồn kho] - C.SoLuong
+                                                 FROM SanPham S
+                                                 INNER JOIN ChiTietHoaDon C ON S.[Mã sản phẩm] = C.MaSP
+                                                 WHERE C.MaHD = @ma";
+                            SqlCommand cmdTruKho = new SqlCommand(sqlTruKho, conn, tran);
+                            cmdTruKho.Parameters.AddWithValue("@ma", maHD);
+                            cmdTruKho.ExecuteNonQuery();
+
+                            tran.Commit();
+
+                            MessageBox.Show("Đã duyệt đơn và xuất kho thành công!", "Hoàn tất");
+
+                            // Cập nhật lại giao diện ngay lập tức
+                            LoadDonWeb();
+                            dgvChiTietDon.DataSource = null; // Xóa trắng bảng bên phải
+                            LoadData(); // Load lại kho để thấy số lượng đã giảm
+                        }
+                        catch (Exception ex)
+                        {
+                            tran.Rollback();
+                            MessageBox.Show("Lỗi duyệt đơn: " + ex.Message);
+                        }
+                    }
+                }
+            }
+            else
+            {
+                MessageBox.Show("Vui lòng chọn 1 đơn hàng bên danh sách để duyệt!");
+            }
+        }
+
+        private void dgvDonWeb_CellClick(object sender, DataGridViewCellEventArgs e)
+        {
+            if (e.RowIndex >= 0)
+            {
+                string maHD = dgvDonWeb.Rows[e.RowIndex].Cells["Mã Đơn"].Value.ToString();
+
+                using (SqlConnection conn = new SqlConnection(cnStr))
+                {
+                    try
+                    {
+                        conn.Open();
+                        // Lấy danh sách sản phẩm khách đã mua trong đơn đó
+                        string sql = @"SELECT S.[Tên sản phẩm] AS [Sản Phẩm], 
+                                              C.SoLuong AS [Số Lượng], 
+                                              C.DonGia AS [Đơn Giá], 
+                                              C.ThanhTien AS [Thành Tiền]
+                                       FROM ChiTietHoaDon C
+                                       INNER JOIN SanPham S ON C.MaSP = S.[Mã sản phẩm]
+                                       WHERE C.MaHD = @ma";
+                        SqlCommand cmd = new SqlCommand(sql, conn);
+                        cmd.Parameters.AddWithValue("@ma", maHD);
+                        SqlDataAdapter da = new SqlDataAdapter(cmd);
+                        DataTable dt = new DataTable();
+                        da.Fill(dt);
+
+                        dgvChiTietDon.DataSource = dt;
+                        dgvChiTietDon.AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.Fill;
+                    }
+                    catch (Exception ex) { Console.WriteLine("Lỗi Load chi tiết: " + ex.Message); }
                 }
             }
         }

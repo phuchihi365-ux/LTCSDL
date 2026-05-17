@@ -14,7 +14,7 @@ namespace LTCSDL
     public partial class Form1 : Form
     {
         // Thay chuỗi kết nối này bằng của máy bạn
-        string connectionString = @"Data Source=.\SQLEXPRESS;Initial Catalog=LTCSDL2;Integrated Security=True";
+        string connectionString = @"Data Source=.\SQLEXPRESS;Initial Catalog=LTCSDL;Integrated Security=True";
 
         public Form1()
         {
@@ -98,6 +98,11 @@ namespace LTCSDL
         private void btnExit_Click_1(object sender, EventArgs e)
         {
             Application.Exit();
+        }
+
+        private void Form1_Load(object sender, EventArgs e)
+        {
+
         }
     }
 }
