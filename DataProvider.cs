@@ -7,7 +7,7 @@ namespace LTCSDL
 {
     public class DataProvider
     {
-        // Khai báo chuỗi kết nối duy nhất tại đây để dễ quản lý, bảo trì
+    
         private string cnStr = @"Data Source=HONGPHUC\SQLEXPRESS;Initial Catalog=LTCSDL;Integrated Security=True;TrustServerCertificate=True;";
 
         // 1. Hàm chạy lệnh SELECT (Lấy dữ liệu đổ vào DataGridView hoặc xử lý)

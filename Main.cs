@@ -555,7 +555,8 @@ namespace LTCSDL
 
             int y = 40; int x = 80;
 
-            g.DrawString("HỒNG PHÚC COMPUTER", fCuaHang, Brushes.Blue, 280, y); y += 35;
+            // ĐÃ SỬA: Đổi từ "HỒNG PHÚC COMPUTER" (Màu xanh) sang "TECHVN" (Màu đỏ)
+            g.DrawString("TECHVN", fCuaHang, Brushes.Red, 370, y); y += 35;
             g.DrawString("HÓA ĐƠN BÁN HÀNG", fTieuDe, Brushes.Black, 300, y); y += 45;
 
             string maHD = "HD" + DateTime.Now.ToString("ddMMyyHHmmss");
@@ -565,7 +566,7 @@ namespace LTCSDL
             g.DrawRectangle(pen, x, y, 680, 30);
             g.DrawString("Tên Sản Phẩm", fDam, Brushes.Black, x + 5, y + 7);
             g.DrawString("SL", fDam, Brushes.Black, x + 380, y + 7);
-            g.DrawString("Đơn\".Giá", fDam, Brushes.Black, x + 450, y + 7);
+            g.DrawString("Đơn Giá", fDam, Brushes.Black, x + 450, y + 7);
             g.DrawString("Thành Tiền", fDam, Brushes.Black, x + 560, y + 7); y += 30;
 
             foreach (DataGridViewRow row in dgvGioHang.Rows)
@@ -1298,7 +1299,7 @@ namespace LTCSDL
             {
                 // Lưu ngầm MaKH vào Tag để lát nữa dùng khi Tạo Phiếu
                 txtSDT_TimBH.Tag = dtKH.Rows[0]["MaKH"].ToString();
-                lblTenKhachBH.Text = "Khách hàng: " + dtKH.Rows[0]["TenKH"].ToString();
+                lblTenKhachBH.Text = dtKH.Rows[0]["TenKH"].ToString();
 
                 // Load các sản phẩm khách đã mua vào ComboBox
                 string sqlSP = @"SELECT S.[Mã sản phẩm], S.[Tên sản phẩm] 
@@ -1507,5 +1508,11 @@ namespace LTCSDL
                 }
             }
         }
+
+        private void dgvKetQuaTim_CellContentClick(object sender, DataGridViewCellEventArgs e)
+        {
+
+        }
     }
 }
+
